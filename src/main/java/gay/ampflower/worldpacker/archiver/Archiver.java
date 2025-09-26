@@ -124,7 +124,10 @@ public interface Archiver<I extends InputStream, O extends OutputStream, E> {
 
 		@Override
 		public TarArchiveOutputStream wrapOutputStream(final OutputStream output) throws IOException {
-			return new TarArchiveOutputStream(output);
+			final var tar = new TarArchiveOutputStream(output);
+			tar.setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX);
+			tar.setBigNumberMode(TarArchiveOutputStream.BIGNUMBER_POSIX);
+			return tar;
 		}
 	}
 

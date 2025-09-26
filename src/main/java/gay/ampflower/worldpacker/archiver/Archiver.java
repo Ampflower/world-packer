@@ -119,12 +119,16 @@ public interface Archiver<I extends InputStream, O extends OutputStream, E> {
 					.map(path -> new TarArchiveEntry(
 							path.toString()
 					))
+					.peek(tar -> {
+						tar.setSize(holder.size());
+					})
 					.collect(Collectors.toSet());
 		}
 
 		@Override
 		public TarArchiveOutputStream wrapOutputStream(final OutputStream output) throws IOException {
 			final var tar = new TarArchiveOutputStream(output);
+			tar.setAddPaxHeadersForNonAsciiNames(true);
 			tar.setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX);
 			tar.setBigNumberMode(TarArchiveOutputStream.BIGNUMBER_POSIX);
 			return tar;

@@ -1,10 +1,16 @@
 package gay.ampflower.worldpacker;// Created 2022-28-09T05:10:24
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * @author Ampflower
- * @since ${version}
  **/
 public final class Utils {
+    private static final StackWalker walker = StackWalker.getInstance(StackWalker.Option.RETAIN_CLASS_REFERENCE);
+
+    private static final Logger logger = logger();
+
     public static final long KiB = 1024, MiB = KiB * KiB, GiB = KiB * MiB, TiB = KiB * GiB, PiB = KiB * TiB, EiB = KiB * PiB;
     private static final int iKB = 1000, iKiB = 1024;
 
@@ -30,5 +36,17 @@ public final class Utils {
         if (d < 10) return ".00";
         if (d < 100) return ".0";
         return ".";
+    }
+
+    public static Logger logger() {
+        return LoggerFactory.getLogger(walker.getCallerClass());
+    }
+
+    public static void join(Thread thread) {
+        try {
+            thread.join();
+        } catch (InterruptedException i) {
+            logger.warn("Why did you interrupt me?", i);
+        }
     }
 }

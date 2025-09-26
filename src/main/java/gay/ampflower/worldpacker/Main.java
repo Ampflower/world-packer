@@ -2,7 +2,16 @@ package gay.ampflower.worldpacker;// Created 2022-11-09T22:30:59
 
 import gay.ampflower.worldpacker.io.ChecksumStreamFactory;
 import gay.ampflower.worldpacker.io.DigestStreamFactory;
+import gay.ampflower.worldpacker.io.InputWorker;
+import org.apache.commons.lang3.time.StopWatch;
+import org.slf4j.Logger;
+import picocli.CommandLine;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.Option;
+import picocli.CommandLine.Parameters;
 
+import java.io.FileDescriptor;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.file.Files;
@@ -10,113 +19,164 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.util.Comparator;
 import java.util.Formatter;
 import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentSkipListSet;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.Callable;
 import java.util.zip.CRC32;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
 
 /**
  * @author Ampflower
- * @since ${version}
  **/
-public final class Main {
-    public static void main(String[] args) throws NoSuchAlgorithmException, IOException {
-        var digestFactory = new DigestStreamFactory(() -> MessageDigest.getInstance("SHA-256"));
-        var cksumFactory = new ChecksumStreamFactory(CRC32::new);
+@Command(
+		name = "world-packer",
+		mixinStandardHelpOptions = true,
+		version = "World Packer 1.1.0",
+		description = """
+				Sorts then dumps an archive.
+								
+				By default, it'll read the current working directory, then dump it to stdout.
+								
+				At current, no advanced transforms that would allow data savings are applied."""
+)
+public final class Main implements Callable<Integer> {
+	// Must be executed first.
+	static {
+		// avoid clobbering stdout when used with piping
+		System.setOut(System.err);
+	}
 
-        var root = args.length >= 1 ? Path.of(args[0]) : Path.of(".");
-        // Digest map
-        var map = new ConcurrentHashMap<Sha256HashHolder, Holder>();
-        // Counters
-        AtomicInteger i1 = new AtomicInteger(), i2 = new AtomicInteger();
-        AtomicLong l1 = new AtomicLong(), l2 = new AtomicLong();
+	private static final Logger logger = Utils.logger();
 
-        try (var stream = Files.walk(root)) {
-            stream.parallel().forEach(path -> {
-                if (Files.isRegularFile(path)) try {
-                    long size = Files.size(path);
-                    if (size == 0L) return;
-                    try (var digestPair = digestFactory.of(Files.newInputStream(path));
-                         var cksumPair = cksumFactory.of(digestPair.inputStream())) {
-                        cksumPair.inputStream().transferTo(OutputStream.nullOutputStream());
-                        var hash = new Sha256HashHolder(digestPair.digest().digest());
-                        var set = map.computeIfAbsent(hash, $ -> new Holder(cksumPair.checksum().getValue(), size));
-                        path = root.relativize(path);
-                        if (set.paths().isEmpty()) {
-                            i1.incrementAndGet();
-                            l1.addAndGet(size);
-                            System.out.printf("%s  %s\n", hash, path);
-                        } else {
-                            var crc = cksumPair.checksum().getValue();
-                            if (set.crc32() != crc)
-                                throw new AssertionError(path + " had mismatched CRC " + Long.toHexString(crc) + ", expected " + Long.toHexString(set.crc32()) + "; Existing entries: " + set.paths);
-                            if (set.size() != size)
-                                throw new AssertionError(path + " had mismatched size " + size + ", expected " + set.size() + "; Existing entries: " + set.paths);
-                            i2.incrementAndGet();
-                            l2.addAndGet(size);
-                            System.out.printf("=== %s -> %s\n", path, set);
-                        }
-                        set.paths().add(path);
-                    }
-                } catch (IOException e) {
-                    throw new RuntimeException(e);
-                }
-            });
-        }
+	@Parameters(index = "0", description = "input", defaultValue = ".")
+	private String input;
 
-        System.out.printf("Digested %d files, %d (%s) unique, %d (%s) duplicates\n", i1.get() + i2.get(),
-                i1.get(), Utils.displaySize(l1.get()),
-                i2.get(), Utils.displaySize(l2.get()));
+	@Parameters(index = "1", description = "output", defaultValue = "-")
+	private String output;
 
-        try (final var writer = Files.newBufferedWriter(Path.of("files.sha256"), StandardOpenOption.CREATE);
-             final var formatter = new Formatter(writer);
-             final var stream = map.entrySet().stream()) {
-            final var itr = stream.sorted(Map.Entry.comparingByKey()).iterator();
-            while (itr.hasNext()) {
-                final var e = itr.next();
-                formatter.format("%s  %s\n", e.getKey(), e.getValue());
-            }
-        }
-        System.out.println("SHA dump available at files.sha256");
+	@Option(names = {"-a", "--archive"}, description = "Valid: ar, cpio, zip, tar", defaultValue = "zip")
+	private Archive archive;
 
-        try (final var outputStream = Files.newOutputStream(Path.of("files.zip"), StandardOpenOption.CREATE_NEW);
-             final var zip = new ZipOutputStream(outputStream);
-             final var stream = map.values().stream()) {
-            // We'll just wrap this in ZSTD.
-            zip.setMethod(ZipOutputStream.STORED);
+	@Option(names = {"-j", "--jobs"},
+			description = "The amount of virtual threads to throw at reading.\n" +
+						  "\n" +
+						  "This does not affect how many writer threads are used, as writing cannot be parallelized.\n" +
+						  "\n" +
+						  "On a hard drive, it may be required to set this value to `1` for first read, or no file cache. " +
+						  "Sequential reading may end up being far faster in that case, especially on older or laptop drives.\n" +
+						  "\n" +
+						  "If you'd like to witness what happens when a program doesn't properly rate limit its jobs, " +
+						  "set this value to `-1`. You'll probably regret it.\n" +
+						  "\n" +
+						  "Defaults to the amount of threads available, multiplied by 4. (i.e., 4 -> 16, 20 -> 80)",
+			defaultValue = "0")
+	private int jobs;
 
-            final var itr = stream.sorted(Comparator.comparingLong(Holder::size)).iterator();
-            while (itr.hasNext()) {
-                final var holder = itr.next();
-                final byte[] array;
-                try (var inputStream = Files.newInputStream(root.resolve(holder.paths.iterator().next()))) {
-                    array = inputStream.readAllBytes();
-                }
-                for (final var p : holder.paths) {
-                    final var entry = new ZipEntry(p.toString());
-                    entry.setCrc(holder.crc32);
-                    entry.setSize(holder.size);
-                    entry.setCompressedSize(holder.size);
-                    zip.putNextEntry(entry);
-                    zip.write(array);
-                }
-                zip.closeEntry();
-            }
-        }
+	@Option(names = {"--sha256sum-export"}, description = "Export a sha256sum compatible file at a given location.")
+	private Path sha256SumPath;
 
-        System.out.println("ZIP available at files.zip");
-    }
+	@Option(names = {"--dry"}, description = "Dry run, don't write the file, only summarise.")
+	private boolean dry;
 
-    private record Holder(long crc32, long size, Set<Path> paths) {
-        private Holder(long crc32, long size) {
-            this(crc32, size, new ConcurrentSkipListSet<>());
-        }
-    }
+	@Option(names = {"--i-have-the-memory-to-store-input"}, description = "Stores the files in memory to allow writing to be faster.")
+	private boolean memoryHog;
+
+	// I once did this and my computer rung for 15 minutes straight.
+	// Would not recommend.
+	@Option(names = {"--i-am-not-wired-into-a-bell"},
+			description = "Forces writing to stdout regardless of if it is a terminal.\n" +
+						  "\n" +
+						  "Intended to avoid accidentally blasting potential megabytes to gigabytes of garbage to your terminal, " +
+						  "which may lock up your system for a while if it spams bells."
+	)
+	private boolean forceStdout;
+
+	public static void main(String[] args) {
+		System.exit(new CommandLine(new Main()).execute(args));
+	}
+
+	@Override
+	public Integer call() throws NoSuchAlgorithmException, IOException {
+		if (!forceStdout && !dry && "-".equals(output) && System.console() != null) {
+			System.err.println("""
+					It appears that I am plumbed to a terminal. Are you sure you want to do this?
+					If you are really sure that you want to do this, or not actually piping to a terminal,
+					pass the `--i-am-not-wired-into-a-bell` flag.
+					                    
+					If you are seeing this and have no idea how I work, pass `--help` instead.
+					""");
+
+			return -1;
+		}
+
+		if (this.jobs == 0) {
+			this.jobs = Runtime.getRuntime().availableProcessors() * 4;
+		} else if (this.jobs < 0) {
+			this.jobs = Integer.MAX_VALUE;
+		}
+
+		logger.info("Using {} jobs to read in files.", this.jobs);
+
+		final var stopwatch = StopWatch.createStarted();
+
+
+		var digestFactory = new DigestStreamFactory(() -> MessageDigest.getInstance("SHA-256"));
+		var cksumFactory = new ChecksumStreamFactory(CRC32::new);
+
+		var root = Path.of(input);
+
+		final InputWorker worker = new InputWorker(root, memoryHog, jobs, digestFactory, cksumFactory).digest();
+
+		stopwatch.stop();
+
+		logger.info("{} => {} files", stopwatch, worker.totalFiles());
+
+		logger.info("Digested {} ({}) total, {} ({}) unique, {} ({}) duplicates",
+				worker.totalFiles(), Utils.displaySize(worker.totalSize()),
+				worker.uniqueCount.get(), Utils.displaySize(worker.uniqueSize.get()),
+				worker.duplicatedCount.get(), Utils.displaySize(worker.duplicatedSize.get())
+		);
+
+		if (sha256SumPath != null) {
+			exportSha256Sum(sha256SumPath, worker.map);
+		}
+
+		if (dry) {
+			return 0;
+		}
+
+		final OutputStream outputStream;
+		if ("-".equals(this.output)) {
+			outputStream = new FileOutputStream(FileDescriptor.out);
+		} else {
+			outputStream = Files.newOutputStream(Path.of(this.output));
+		}
+
+		archive.toArchiver().archive(outputStream, root, worker.map.values());
+
+		logger.info("Archive available.");
+
+		return 0;
+	}
+
+	private static void exportSha256Sum(final Path path, final Map<Sha256HashHolder, Holder> map) {
+		try (final var writer = Files.newBufferedWriter(path, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+			 final var formatter = new Formatter(writer);
+			 final var stream = map.entrySet().stream()
+		) {
+			final var itr = stream.sorted(Map.Entry.comparingByKey()).iterator();
+
+			while (itr.hasNext()) {
+				final var e = itr.next();
+
+				for (final var p : e.getValue().paths()) {
+					formatter.format("%s  %s\n", e.getKey(), p);
+				}
+			}
+		} catch (IOException io) {
+			logger.warn("Cannot export sha256sum to {}", path, io);
+			return;
+		}
+
+		logger.info("SHA dump available at {}", path);
+	}
 }

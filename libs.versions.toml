@@ -1,0 +1,46 @@
+[versions]
+# Apache Commons
+commons-compress = "1.28.0"
+zstd = "1.5.7-4"
+lz4 = "1.8.0"
+xz = "1.10"
+
+# Utilites
+fastutil = "8.5.16"
+picocli = "4.7.7"
+
+# Logger
+slf4j = "2.0.17"
+logback = "1.5.18"
+
+# Plugins
+shadow = "9.2.1"
+proguard = "7.7.0"
+
+[libraries]
+# Apache Commons
+commons-compress = { module = "org.apache.commons:commons-compress", version.ref = "commons-compress" }
+zstd = { module = "com.github.luben:zstd-jni", version.ref = "zstd" }
+lz4 = { module = "org.lz4:lz4-java", version.ref = "lz4" }
+xz = { module = "org.tukaani:xz", version.ref = "xz" }
+
+# Utilties
+fastutil = { module = "it.unimi.dsi:fastutil", version.ref = "fastutil" }
+picocli = { module = "info.picocli:picocli", version.ref = "picocli" }
+picocli-codegen = { module = "info.picocli:picocli-codegen", version.ref = "picocli" }
+
+# Logger
+logback = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
+slf4j = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
+
+# Proguard
+proguard = { module = "com.guardsquare:proguard-gradle", version.ref = "proguard" }
+
+[bundles]
+commons = ["commons-compress"]
+utils = ["picocli"]
+logger = ["logback", "slf4j"]
+annotations = ["picocli-codegen"]
+
+[plugins]
+shadow = { id = "com.gradleup.shadow", version.ref = "shadow" }

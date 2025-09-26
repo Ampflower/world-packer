@@ -1,5 +1,13 @@
 ### Application ###
-files.*
+*.sha256
+*.ar
+*.cpio
+*.tar
+*.zip
+*.ar.*
+*.cpio.*
+*.tar.*
+*.zip.*
 
 ### Gradle ###
 .gradle

@@ -20,11 +20,12 @@ import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -34,6 +35,8 @@ import java.util.zip.ZipOutputStream;
  * @author Ampflower
  **/
 public interface Archiver<I extends InputStream, O extends OutputStream, E> {
+	FileTime EPOCH = FileTime.fromMillis(0);
+
 	Set<E> toEntries(final Holder holder);
 
 	O wrapOutputStream(final OutputStream output) throws IOException;
@@ -43,7 +46,8 @@ public interface Archiver<I extends InputStream, O extends OutputStream, E> {
 	default void archive(
 			final OutputStream outputStream,
 			final Path root,
-			final Collection<Holder> holders
+			final Collection<Holder> holders,
+			final AtomicInteger counter
 	) throws IOException {
 		try (outputStream;
 			 final var zip = this.wrapOutputStream(outputStream);
@@ -51,7 +55,9 @@ public interface Archiver<I extends InputStream, O extends OutputStream, E> {
 
 			final var itr = stream.sorted(Comparator.comparingLong(Holder::size)).iterator();
 			while (itr.hasNext()) {
-				this.writeHolderAsEntries(zip, root, itr.next());
+				final var holder = itr.next();
+				this.writeHolderAsEntries(zip, root, holder);
+				counter.addAndGet(holder.paths().size());
 			}
 		}
 	}
@@ -65,7 +71,7 @@ public interface Archiver<I extends InputStream, O extends OutputStream, E> {
 				final Path root,
 				final Holder holder
 		) throws IOException {
-			final byte[] array = Files.readAllBytes(root.resolve(holder.paths().iterator().next()));
+			final byte[] array = holder.data().toArray();
 
 			for (final var entry : this.toEntries(holder)) {
 				output.putArchiveEntry(entry);
@@ -121,6 +127,7 @@ public interface Archiver<I extends InputStream, O extends OutputStream, E> {
 					))
 					.peek(tar -> {
 						tar.setSize(holder.size());
+						tar.setLastModifiedTime(EPOCH);
 					})
 					.collect(Collectors.toSet());
 		}
@@ -185,7 +192,7 @@ public interface Archiver<I extends InputStream, O extends OutputStream, E> {
 				final Path root,
 				final Holder holder
 		) throws IOException {
-			final byte[] array = Files.readAllBytes(root.resolve(holder.paths().iterator().next()));
+			final byte[] array = holder.data().toArray();
 
 			for (final var entry : this.toEntries(holder)) {
 				output.putNextEntry(entry);

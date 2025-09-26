@@ -4,6 +4,7 @@ import gay.ampflower.worldpacker.Data;
 import gay.ampflower.worldpacker.Holder;
 import gay.ampflower.worldpacker.Sha256HashHolder;
 import gay.ampflower.worldpacker.Utils;
+import org.apache.commons.lang3.time.StopWatch;
 import org.slf4j.Logger;
 
 import java.io.IOException;
@@ -32,6 +33,7 @@ public final class InputWorker {
 
 	public final Map<Sha256HashHolder, Holder> map = new ConcurrentHashMap<>();
 
+	private final StopWatch stopwatch;
 
 	// Stats counters
 	private final AtomicInteger nonRegularCount = new AtomicInteger();
@@ -48,13 +50,15 @@ public final class InputWorker {
 			final boolean cacheInput,
 			final int jobs,
 			final DigestStreamFactory digestFactory,
-			final ChecksumStreamFactory cksumFactory
+			final ChecksumStreamFactory cksumFactory,
+			final StopWatch stopwatch
 	) {
 		this.root = root;
 		this.cacheInput = cacheInput;
 		this.jobs = jobs;
 		this.digestFactory = digestFactory;
 		this.cksumFactory = cksumFactory;
+		this.stopwatch = stopwatch;
 	}
 
 	private void work0(Path path) throws IOException {
@@ -143,6 +147,15 @@ public final class InputWorker {
 
 	public long totalSize() {
 		return this.uniqueSize.get() + this.duplicatedSize.get();
+	}
+
+	public void log() {
+		logger.info("{} => Digested {} ({}) total, {} ({}) unique, {} ({}) duplicates",
+				this.stopwatch,
+				this.totalFiles(), Utils.displaySize(this.totalSize()),
+				this.uniqueCount.get(), Utils.displaySize(this.uniqueSize.get()),
+				this.duplicatedCount.get(), Utils.displaySize(this.duplicatedSize.get())
+		);
 	}
 
 	private record Job(InputWorker worker, Path path, Semaphore semaphore) implements Runnable {

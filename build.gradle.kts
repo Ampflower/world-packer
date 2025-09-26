@@ -49,8 +49,6 @@ tasks {
 		group = "build"
 		dependsOn(shadowJar)
 
-		inputs.property("awa", Math.random())
-
 		injars(shadowJar.get().archiveFile.get())
 		outjars("${layout.buildDirectory.get()}/libs/${project.name}-$version-proguard.jar")
 		libraryjars("${System.getProperty("java.home")}/jmods/")

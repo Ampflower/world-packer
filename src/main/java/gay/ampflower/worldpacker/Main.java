@@ -3,6 +3,7 @@ package gay.ampflower.worldpacker;// Created 2022-11-09T22:30:59
 import gay.ampflower.worldpacker.io.ChecksumStreamFactory;
 import gay.ampflower.worldpacker.io.DigestStreamFactory;
 import gay.ampflower.worldpacker.io.InputWorker;
+import org.apache.commons.io.output.CountingOutputStream;
 import org.apache.commons.lang3.time.StopWatch;
 import org.slf4j.Logger;
 import picocli.CommandLine;
@@ -22,6 +23,10 @@ import java.security.NoSuchAlgorithmException;
 import java.util.Formatter;
 import java.util.Map;
 import java.util.concurrent.Callable;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.CRC32;
 
 /**
@@ -46,6 +51,12 @@ public final class Main implements Callable<Integer> {
 	}
 
 	private static final Logger logger = Utils.logger();
+
+	private static final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor(it -> {
+		final var thread = new Thread(it);
+		thread.setDaemon(true);
+		return thread;
+	});
 
 	@Parameters(index = "0", description = "input", defaultValue = ".")
 	private String input;
@@ -118,23 +129,27 @@ public final class Main implements Callable<Integer> {
 
 		final var stopwatch = StopWatch.createStarted();
 
-
 		var digestFactory = new DigestStreamFactory(() -> MessageDigest.getInstance("SHA-256"));
 		var cksumFactory = new ChecksumStreamFactory(CRC32::new);
 
 		var root = Path.of(input);
 
-		final InputWorker worker = new InputWorker(root, memoryHog, jobs, digestFactory, cksumFactory).digest();
+		final InputWorker worker = new InputWorker(root, memoryHog, jobs, digestFactory, cksumFactory, stopwatch);
+
+		final var workerReader = executor.scheduleAtFixedRate(
+				worker::log,
+				5,
+				5,
+				TimeUnit.SECONDS
+		);
+
+		worker.digest();
 
 		stopwatch.stop();
+		workerReader.cancel(false);
 
-		logger.info("{} => {} files", stopwatch, worker.totalFiles());
-
-		logger.info("Digested {} ({}) total, {} ({}) unique, {} ({}) duplicates",
-				worker.totalFiles(), Utils.displaySize(worker.totalSize()),
-				worker.uniqueCount.get(), Utils.displaySize(worker.uniqueSize.get()),
-				worker.duplicatedCount.get(), Utils.displaySize(worker.duplicatedSize.get())
-		);
+		logger.info("Done!");
+		worker.log();
 
 		if (sha256SumPath != null) {
 			exportSha256Sum(sha256SumPath, worker.map);
@@ -151,9 +166,31 @@ public final class Main implements Callable<Integer> {
 			outputStream = Files.newOutputStream(Path.of(this.output));
 		}
 
-		archive.toArchiver().archive(outputStream, root, worker.map.values());
+		final var counter = new AtomicInteger();
+		final var countingStream = new CountingOutputStream(outputStream);
 
-		logger.info("Archive available.");
+		final var scheduled = executor.scheduleAtFixedRate(
+				() -> logger.info(
+						"Committed {} files, streaming {} ({} bytes)",
+						counter.get(),
+						Utils.displaySize(countingStream.getByteCount()),
+						countingStream.getByteCount()
+				),
+				5,
+				5,
+				TimeUnit.SECONDS
+		);
+
+		archive.toArchiver().archive(countingStream, root, worker.map.values(), counter);
+
+		scheduled.cancel(false);
+
+		logger.info(
+				"Archive available. Written {} files, streaming {} ({} bytes)",
+				counter.get(),
+				Utils.displaySize(countingStream.getByteCount()),
+				countingStream.getByteCount()
+		);
 
 		return 0;
 	}

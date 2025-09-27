@@ -127,7 +127,7 @@ public final class Main implements Callable<Integer> {
 
 		logger.info("Using {} jobs to read in files.", this.jobs);
 
-		final var stopwatch = StopWatch.createStarted();
+		final var stopwatch = StopWatch.create();
 
 		var digestFactory = new DigestStreamFactory(() -> MessageDigest.getInstance("SHA-256"));
 		var cksumFactory = new ChecksumStreamFactory(CRC32::new);
@@ -142,6 +142,8 @@ public final class Main implements Callable<Integer> {
 				5,
 				TimeUnit.SECONDS
 		);
+
+		stopwatch.start();
 
 		worker.digest();
 
@@ -169,9 +171,13 @@ public final class Main implements Callable<Integer> {
 		final var counter = new AtomicInteger();
 		final var countingStream = new CountingOutputStream(outputStream);
 
+		stopwatch.reset();
+
+
 		final var scheduled = executor.scheduleAtFixedRate(
 				() -> logger.info(
-						"Committed {} files, streaming {} ({} bytes)",
+						"{} => Committed {} files, streaming {} ({} bytes)",
+						stopwatch,
 						counter.get(),
 						Utils.displaySize(countingStream.getByteCount()),
 						countingStream.getByteCount()
@@ -181,15 +187,19 @@ public final class Main implements Callable<Integer> {
 				TimeUnit.SECONDS
 		);
 
+		stopwatch.start();
+
 		archive.toArchiver().archive(countingStream, root, worker.map.values(), counter);
 
+		stopwatch.stop();
 		scheduled.cancel(false);
 
 		logger.info(
-				"Archive available. Written {} files, streaming {} ({} bytes)",
+				"Archive available. Written {} files, streaming {} ({} bytes). Time taken: {}",
 				counter.get(),
 				Utils.displaySize(countingStream.getByteCount()),
-				countingStream.getByteCount()
+				countingStream.getByteCount(),
+				stopwatch
 		);
 
 		return 0;
